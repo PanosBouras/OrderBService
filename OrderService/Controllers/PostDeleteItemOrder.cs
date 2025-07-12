@@ -10,16 +10,41 @@ namespace OrderService.Controllers
     public class PostDeleteItemOrder : Controller
     {
         [HttpPost(Name = "PostDeleteItemSeq")]
-        public async Task PostCreateOrderAsync(int orderItemSeq)
+        public async Task PostCreateOrderAsync(String orderItemSeq,String username)
         {
             String delqry = "DELETE ORDERB_ORDERDTL WHERE ORDERDTLITEMISSEQ = :pi_orderItemSeq";
-            using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-            using (OracleCommand command = new OracleCommand(delqry, connection))
+            try
             {
-                command.Parameters.Add("pi_orderItemSeq", orderItemSeq);
-                command.Connection.Open();
-                command.ExecuteNonQuery();
-                command.Connection.Close();
+                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
+                using (OracleCommand command = new OracleCommand(delqry, connection))
+                {
+                    command.Parameters.Add("pi_orderItemSeq", orderItemSeq);
+                    command.Connection.Open();
+                    command.ExecuteNonQuery();
+                    command.Connection.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+
+            }
+
+            String updatehdr = "UPDATE ORDERB_ORDERHDR SET MODIFYEDUSER = :pi_user WHERE  ORDERID = ( SELECT MAX(ORDERID) FROM ORDERB_ORDERDTL WHERE ORDERDTLITEMISSEQ = :pi_orderItemSeq)";
+            try
+            {
+                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
+                using (OracleCommand command = new OracleCommand(delqry, connection))
+                {
+                    command.Parameters.Add("pi_user", username);
+                    command.Parameters.Add("pi_orderItemSeq", orderItemSeq);
+                    command.Connection.Open();
+                    command.ExecuteNonQuery();
+                    command.Connection.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+
             }
         }
 

@@ -9,13 +9,14 @@ namespace OrderService.Controllers
     public class PostDeleteOrder : Controller
     {
         [HttpPost(Name = "PostDeleteOrder")]
-        public async Task PostCreateOrderAsync(int tableid)
+        public async Task PostCreateOrderAsync(int tableid,String username)
         {
-            String delqry = "BEGIN DeleteOrder(:pi_tableid); END;";
+            String delqry = "BEGIN DeleteOrder(:pi_tableid,:pi_username); END;";
             using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
             using (OracleCommand command = new OracleCommand(delqry, connection))
             {
                 command.Parameters.Add("pi_tableid", tableid);
+                command.Parameters.Add("pi_username", username);
                 command.Connection.Open();
                 command.ExecuteNonQuery();
                 command.Connection.Close();
