@@ -21,11 +21,13 @@ namespace OrderService.Controllers
 
             public String Comments { get; set; }
             public String OrderDTLSeq { get; set; }
+
+            public String Persons { get; set; }
         }
 
 
         [HttpGet(Name = "GetOrdItems")]
-        public async Task<string> GetOrderItemsAsync(int tableid)
+        public async Task<string> GetOrderItemsAsync(int tableid, int companyid)
         {
             string jsonString = "";
 
@@ -43,13 +45,15 @@ namespace OrderService.Controllers
                                     NVL(d.PRICE,0) PRICE,
                                     DECODE(d.PAYEDFLG, NULL, 'pending', 'completed') AS STATUS,
                                     d.ORDERDTLITEMISSEQ,
-                                    d.ORDERITEMDESCRIPTION
+                                    d.ORDERITEMDESCRIPTION,
+                                    h.PERSONS
                                 FROM 
                                     ORDERB_ORDERHDR h 
                                     LEFT JOIN ORDERB_ORDERDTL d ON h.ORDERID = d.ORDERID  
                                 WHERE 
                                     h.TABLEID = :pi_tableid
-                                    AND h.ORDERID = (SELECT MAX(h2.ORDERID) FROM ORDERB_ORDERHDR h2 WHERE h2.TABLEID = :pi_tableid  AND h2.STATUSFLG =0)
+                                    AND h.ORDERID = (SELECT MAX(h2.ORDERID) FROM ORDERB_ORDERHDR h2 WHERE h2.TABLEID = :pi_tableid  AND h2.STATUSFLG =0 AND h2.COMPANYID = :pi_companyid)
+                                    AND h.COMPANYID = :pi_companyid
   
                                 ORDER BY 
                                     h.ORDERID, d.ORDERITEMID
@@ -57,7 +61,9 @@ namespace OrderService.Controllers
 
                     using (OracleCommand command = new OracleCommand(query, connection))
                     {
+                        command.BindByName = true;
                         command.Parameters.Add(new OracleParameter("pi_tableid", tableid));
+                        command.Parameters.Add(new OracleParameter("pi_companyid", companyid));
                         using (OracleDataReader reader = command.ExecuteReader())
                         {
                             while (reader.Read())
@@ -71,7 +77,8 @@ namespace OrderService.Controllers
                                     Price = Double.Parse(reader["PRICE"].ToString()),
                                     Status = reader["STATUS"].ToString(),
                                     OrderDTLSeq = reader["ORDERDTLITEMISSEQ"].ToString(),
-                                    Comments= reader["ORDERITEMDESCRIPTION"].ToString()
+                                    Comments= reader["ORDERITEMDESCRIPTION"].ToString(),
+                                    Persons = reader["PERSONS"].ToString()
                                 };
 
                                 orderItems.Add(Oi);

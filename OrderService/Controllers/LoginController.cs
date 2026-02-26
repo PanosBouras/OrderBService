@@ -12,7 +12,7 @@ namespace OrderService.Controllers
     public class Credentials
     {
         public string Username { get; set; }
-        public decimal Password { get; set; }
+        public string Password { get; set; }
 
         public string ComputeSha256Hash(string rawData)
         {
@@ -40,7 +40,7 @@ namespace OrderService.Controllers
     public class LoginController : Controller
     {
         [HttpGet(Name = "PostLogin")]
-        public async Task<string> Login([FromQuery] string username, [FromQuery] string password)
+        public async Task<JsonResult> Login([FromQuery] string username, [FromQuery] string password)
         {
 
             string key = "orderB";
@@ -49,22 +49,28 @@ namespace OrderService.Controllers
             string hashedUsername = credentials.ComputeSha256Hash(username);
             string hashedPassword = credentials.ComputeSha256Hash(password);
             string userid = "";
+            String status = "false";
+            String companyID = "1";
+            int numbersOfTables = 0;
             try
             {
                 using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
                 {
                     connection.Open();
-                    string query = @"SELECT ID FROM ORDERB_USERS WHERE H_USERNAME = :pi_username AND PASSWORD = :pi_password";
+                    string query = @"SELECT u.ID, NVL(c.NUMOFTABLES,0) NUMOFTABLES, c.COMPANYID FROM ORDERB_USERS u , ORDERB_COMPANYINFO c WHERE u.USERNAME = :pi_username AND u.PASSWORD = :pi_password AND c.COMPANYID = u.COMPANYID";
 
                     using (OracleCommand command = new OracleCommand(query, connection))
                     {
-                        command.Parameters.Add(new OracleParameter("pi_username", hashedUsername));
+                        command.Parameters.Add(new OracleParameter("pi_username", username));
                         command.Parameters.Add(new OracleParameter("pi_password", hashedPassword));
+                        // command.Parameters.Add(new OracleParameter("pi_password", hashedPassword));
                         using (OracleDataReader reader = command.ExecuteReader())
                         {
                             while (reader.Read())
                             {
                                 userid = reader["ID"].ToString();
+                                numbersOfTables = Int32.Parse(reader["NUMOFTABLES"].ToString());
+                                companyID = reader["COMPANYID"].ToString();
                             }
                         }
                     }
@@ -74,14 +80,29 @@ namespace OrderService.Controllers
             {
 
             }
-
-/*
-            if (username == "panos" && password == "123")
+            if (!String.IsNullOrEmpty(userid))
             {
-                return "true";
-            }*/
-            return userid;
+                status = "true";
+            }
+                /*
+                            if (username == "panos" && password == "123")
+                            {
+                                return "true";
+                            }*/
+                return Json(new
+                {
+                    status = status,
+                    companyID = companyID,
+                    username = username,
+                    userId = userid,
+                    TotalTables = numbersOfTables,
+                    debug_username = username,
+                    debug_password = password,
+                    hashedUsername,
+                    hashedPassword
+                });
+
         }
 
     }
-}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+}

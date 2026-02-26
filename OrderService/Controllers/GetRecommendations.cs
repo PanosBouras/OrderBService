@@ -14,6 +14,7 @@ namespace OrderService.Controllers
             public String CategoryId { get; set; }
             public String ItemRecommendationsID { get; set; }
             public String RecommendationDecription { get; set; }
+            public String RecommendationPrice { get; set; }
         }
 
         [HttpGet(Name = "GetRecommendations")]
@@ -27,7 +28,7 @@ namespace OrderService.Controllers
                 try
                 {
                     connection.Open();
-                    string query = @"SELECT ITEMID,CATEGORYID,ITEMRECOMMENDATIONSID,RECOMMENDATIONDECRIPTION FROM ORDERB_RECOMMENDATIONS WHERE ITEMID = :pi_itemid";
+                    string query = @"SELECT ITEMID,CATEGORYID,ITEMRECOMMENDATIONSID,RECOMMENDATIONDECRIPTION,PRICE FROM ORDERB_RECOMMENDATIONS WHERE ITEMID = :pi_itemid";
 
                     using (OracleCommand command = new OracleCommand(query, connection))
                     {
@@ -41,7 +42,8 @@ namespace OrderService.Controllers
                                     ItemID = reader["ITEMID"].ToString(),
                                     CategoryId = reader["CATEGORYID"].ToString(),
                                     ItemRecommendationsID = reader["ITEMRECOMMENDATIONSID"].ToString(),
-                                    RecommendationDecription = reader["RECOMMENDATIONDECRIPTION"].ToString()
+                                    RecommendationDecription = reader["RECOMMENDATIONDECRIPTION"].ToString(),
+                                    RecommendationPrice = reader["PRICE"].ToString()
                                 };
 
                                 Recommendations.Add(re);

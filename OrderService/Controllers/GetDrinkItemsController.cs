@@ -22,7 +22,7 @@ namespace OrderService.Controllers
 
 
         [HttpGet(Name = "GetDrinkItems")]
-        public async Task<string> GetFoodItems()
+        public async Task<string> GetDrinkItems()
         {
             string jsonString = "";
 
