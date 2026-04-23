@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Oracle.ManagedDataAccess.Client;
 using static OrderService.Controllers.PostPaymentRequest;
+using BCrypt.Net;
 
 namespace OrderService.Controllers
 {
@@ -46,8 +47,12 @@ namespace OrderService.Controllers
             string key = "orderB";
             Credentials credentials = new Credentials();
             // Hash the password using SHA-256
-            string hashedUsername = credentials.ComputeSha256Hash(username);
-            string hashedPassword = credentials.ComputeSha256Hash(password);
+            //string hashedUsername = credentials.ComputeSha256Hash(username);
+
+            string hashedUsername = BCrypt.Net.BCrypt.HashPassword(username);
+            string hashedPassword = BCrypt.Net.BCrypt.HashPassword(password);
+            bool isValidUsername = BCrypt.Net.BCrypt.Verify(username, hashedUsername);
+            bool isValidPassword = BCrypt.Net.BCrypt.Verify(password, hashedPassword);
             string userid = "";
             String status = "false";
             String companyID = "1";
@@ -80,16 +85,16 @@ namespace OrderService.Controllers
             {
 
             }
-            if (!String.IsNullOrEmpty(userid))
+            if (isValidUsername && isValidPassword)
             {
                 status = "true";
             }
-                /*
-                            if (username == "panos" && password == "123")
-                            {
-                                return "true";
-                            }*/
-                return Json(new
+/*
+            if (username == "panos" && password == "123")
+            {
+                status = "true";
+            }*/
+            return Json(new
                 {
                     status = status,
                     companyID = companyID,
