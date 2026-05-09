@@ -1,9 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
-using Oracle.ManagedDataAccess.Client;
+using Npgsql;
 using OrderService.Hubs;
-using System.ComponentModel.Design;
-using System.Threading.Tasks;
 
 namespace OrderService.Controllers
 {
@@ -17,6 +15,7 @@ namespace OrderService.Controllers
         {
             _hubContext = hubContext;
         }
+
         public class OrderItemInfo
         {
             public string comment { get; set; }
@@ -25,7 +24,10 @@ namespace OrderService.Controllers
             public string[] selectedRecommendations { get; set; }
             public string username { get; set; }
         }
-         
+
+        // ---------------------------
+        // UPDATE STATUS
+        // ---------------------------
         [HttpPost("UpdateStatusItem")]
         public async Task<IActionResult> UpdateStatus(
             [FromQuery] string orderItemId,
@@ -37,19 +39,21 @@ namespace OrderService.Controllers
 
             try
             {
-                string updateSql =
-                    "UPDATE ORDERB_ORDERDTL " +
-                    "SET STATUS = :pi_status " +
-                    "WHERE ORDERDTLITEMISSEQ = :pi_orderItemId";
+                string sql = @"
+                    UPDATE orderb_orderdtl
+                    SET status = @status
+                    WHERE orderdtlitemisseq = @id;
+                ";
 
-                using var connection = new OracleConnection(ConnectionString.Value);
-                using var command = new OracleCommand(updateSql, connection);
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+                await conn.OpenAsync();
 
-                command.Parameters.Add("pi_status", OracleDbType.Int32).Value = status;
-                command.Parameters.Add("pi_orderItemId", OracleDbType.Varchar2).Value = orderItemId;
+                using var cmd = new NpgsqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("status", status);
+                cmd.Parameters.AddWithValue("id", orderItemId);
 
-                await connection.OpenAsync();
-                int rows = await command.ExecuteNonQueryAsync();
+                int rows = await cmd.ExecuteNonQueryAsync();
+
                 if (rows > 0)
                 {
                     await _hubContext.Clients
@@ -60,13 +64,14 @@ namespace OrderService.Controllers
                             status
                         });
                 }
+
                 return Ok(new
                 {
                     success = true,
                     rowsAffected = rows
                 });
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 return StatusCode(500, new
                 {
@@ -75,7 +80,10 @@ namespace OrderService.Controllers
                 });
             }
         }
-         
+
+        // ---------------------------
+        // UPDATE DETAILS
+        // ---------------------------
         [HttpPost("UpdateOrderItem")]
         public async Task<IActionResult> UpdateDetails(
             [FromQuery] string companyID,
@@ -88,36 +96,41 @@ namespace OrderService.Controllers
 
             try
             {
-                string updateSql =
-                    "UPDATE ORDERB_ORDERDTL " +
-                    "SET ORDERITEMDESCRIPTION = :pi_description, " +
-                    "PRICE = (SELECT PRICE FROM ORDERB_ITEM WHERE ITEMID = " +
-                    "(SELECT ORDERITEMID FROM ORDERB_ORDERDTL WHERE ORDERDTLITEMISSEQ = :pi_orderItemId)) + :pi_price, " +
-                    "MODIFYEDUSER = :pi_username " +
-                    "WHERE ORDERDTLITEMISSEQ = :pi_orderItemId";
+                string sql = @"
+                    UPDATE orderb_orderdtl d
+                    SET orderitemdescription = @desc,
+                        price = COALESCE(i.price, 0) + @extra,
+                        modifyeduser = @user
+                    FROM orderb_item i
+                    WHERE d.orderdtlitemisseq = @id
+                      AND i.itemid = d.orderitemid;
+                ";
 
-                using var connection = new OracleConnection(ConnectionString.Value);
-                using var command = new OracleCommand(updateSql, connection);
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+                await conn.OpenAsync();
 
-                command.Parameters.Add("pi_description", OracleDbType.Varchar2).Value = orderJson.comment;
-                command.Parameters.Add("pi_orderItemId", OracleDbType.Varchar2).Value = orderJson.orderItemId;
-                command.Parameters.Add("pi_price", OracleDbType.Decimal).Value = orderJson.extraPrice;
-                command.Parameters.Add("pi_username", OracleDbType.Varchar2).Value = username;
+                using var cmd = new NpgsqlCommand(sql, conn);
 
-                await connection.OpenAsync();
-                int rows = await command.ExecuteNonQueryAsync();
+                cmd.Parameters.AddWithValue("desc", orderJson.comment ?? "");
+                cmd.Parameters.AddWithValue("id", orderJson.orderItemId);
+                cmd.Parameters.AddWithValue("extra", orderJson.extraPrice);
+                cmd.Parameters.AddWithValue("user", username);
+
+                int rows = await cmd.ExecuteNonQueryAsync();
+
                 if (rows > 0)
                 {
                     await _hubContext.Clients.All
                         .SendAsync("ReceiveOrdersUpdate", orderJson);
                 }
+
                 return Ok(new
                 {
                     success = true,
                     rowsAffected = rows
                 });
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
                 return StatusCode(500, new
                 {

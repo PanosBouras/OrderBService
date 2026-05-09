@@ -1,12 +1,6 @@
-﻿using System.Data;
-using System.Xml.Linq;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
-using Oracle.ManagedDataAccess.Client;
-using static OrderService.Controllers.GetOrderItemsController;
-using static OrderService.Controllers.PostCreateOrder;
-using static OrderService.Controllers.PostPaymentRequest;
-
+using Npgsql;
 
 namespace OrderService.Controllers
 {
@@ -14,7 +8,6 @@ namespace OrderService.Controllers
     [ApiController]
     public class PostPaymentRequest : ControllerBase
     {
-
         public class PaymentInfo
         {
             public double Card { get; set; }
@@ -29,103 +22,114 @@ namespace OrderService.Controllers
             public double Price { get; set; }
         }
 
-
         [HttpPost(Name = "PostPaymentRequest")]
-        public async Task<Boolean> PostPaymentRequestAsync(String username, [FromBody] PaymentInfo Json)
-        { 
-                updateOrderDTL(Json,username); 
-            
-            if (checkForUpdateOrderHDR(Json.OrderId))
+        public async Task<bool> PostPaymentRequestAsync(string username, [FromBody] PaymentInfo json)
+        {
+            UpdateOrderDTL(json, username);
+
+            if (CheckForUpdateOrderHDR(json.OrderId))
             {
-                updateOrderHDR(Json.OrderId,username,Json.Cash,Json.Card);
+                UpdateOrderHDR(json.OrderId, username, json.Cash, json.Card);
                 return true;
             }
+
             return false;
         }
 
-        private void updateOrderDTL(PaymentInfo Pi,String username)
+        private void UpdateOrderDTL(PaymentInfo pi, string username)
         {
             try
             {
-                String insrt = @"UPDATE ORDERB_ORDERDTL SET PAYEDFLG = 1 , PAYEDUSER = :pi_username , PAYEDDATE = SYSDATE , PRICE = :pi_price WHERE ORDERDTLITEMISSEQ = :pi_orderdtlitemseq";
-             for(int i = 0;i< Pi.Items.Length; i++) {
-                    using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-                    using (OracleCommand command = new OracleCommand(insrt, connection))
-                    {
-                        command.Parameters.Add("pi_username", username);
-                        command.Parameters.Add("pi_price", Pi.Items[i].Price);
-                        command.Parameters.Add("pi_orderdtlitemseq", Pi.Items[i].OrderDTLSeq);
+                string sql = @"UPDATE orderb_orderdtl
+                    SET payedflg = 1,
+                        payeduser = @username,
+                        payeddate = NOW(),
+                        price = @price
+                    WHERE orderdtlitemisseq = @seq;
+                ";
 
-                        command.Connection.Open();
-                        int rows = command.ExecuteNonQuery();
-                        command.Connection.Close();
-                    }
-                }
-            }
-            catch (Exception ex) { Console.WriteLine(ex.ToString()); }
-        }
-        private void updateOrderHDR(String orderid,String username,double cash, double card)
-        {
-            try
-            {
-                double totalprice = 0;
-                totalprice = cash + card;
-                String insrt = @"UPDATE ORDERB_ORDERHDR SET STATUSFLG = 1 , PAYEDUSER = :pi_username , PAYEDDATE = SYSDATE , TOTALPRICE = :pi_totalprice ,TOTALCASHPRICE = :pi_totalcash , TOTALCARDPRICE = :pi_totalcard WHERE ORDERID = :pi_orderid"; 
-                    using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-                    using (OracleCommand command = new OracleCommand(insrt, connection))
-                    {
-                        command.Parameters.Add("pi_username", username); 
-                        command.Parameters.Add("pi_totalprice", totalprice);
-                        command.Parameters.Add("pi_totalcash", cash); 
-                        command.Parameters.Add("pi_totalcard", card);
-                        command.Parameters.Add("pi_orderid", orderid);
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+                conn.Open();
 
-                    command.Connection.Open();
-                        int rows = command.ExecuteNonQuery();
-                        command.Connection.Close();
-                    } 
-            }
-            catch (Exception ex) { Console.WriteLine(ex.ToString()); }
-        }
-
-        private bool checkForUpdateOrderHDR(String orderid)
-        {
-            String haspaid = "";
-            try
-            {
-                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
+                foreach (var item in pi.Items)
                 {
-                    connection.Open();
-                    string query = @"SELECT 'X' AS PAID
-                                            FROM DUAL
-                                            WHERE (SELECT COUNT(*) 
-                                                   FROM ORDERB_ORDERDTL 
-                                                   WHERE ORDERID = :pi_orderid AND PAYEDFLG = 1) 
-                                                  = (SELECT COUNT(*) 
-                                                     FROM ORDERB_ORDERDTL 
-                                                     WHERE ORDERID = :pi_orderid)";
+                    using var cmd = new NpgsqlCommand(sql, conn);
+                    cmd.Parameters.AddWithValue("username", username);
+                    cmd.Parameters.AddWithValue("price", item.Price);
+                    cmd.Parameters.AddWithValue("seq", item.OrderDTLSeq);
 
-                    using (OracleCommand command = new OracleCommand(query, connection))
-                    {
-                        command.Parameters.Add(new OracleParameter("pi_orderid", orderid));
-                        using (OracleDataReader reader = command.ExecuteReader())
-                        {
-                            while (reader.Read())
-                            {
-                                haspaid = reader["PAID"].ToString(); 
-                            }
-                        }
-                    }
+                    cmd.ExecuteNonQuery();
                 }
             }
             catch (Exception ex)
             {
-                return false;
-
+                Console.WriteLine(ex);
             }
-            if (haspaid=="X")
-                return true;
-            return false;
+        }
+
+        private void UpdateOrderHDR(string orderid, string username, double cash, double card)
+        {
+            try
+            {
+                double total = cash + card;
+
+                string sql = @"
+                    UPDATE orderb_orderhdr
+                    SET statusflg = 1,
+                        payeduser = @username,
+                        payeddate = NOW(),
+                        totalprice = @total,
+                        totalcashprice = @cash,
+                        totalcardprice = @card
+                    WHERE orderid = @orderid;
+                ";
+
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+                conn.Open();
+
+                using var cmd = new NpgsqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("username", username);
+                cmd.Parameters.AddWithValue("total", total);
+                cmd.Parameters.AddWithValue("cash", cash);
+                cmd.Parameters.AddWithValue("card", card);
+                cmd.Parameters.AddWithValue("orderid", orderid);
+
+                cmd.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+            }
+        }
+
+        private bool CheckForUpdateOrderHDR(string orderid)
+        {
+            try
+            {
+                string sql = @"
+                    SELECT CASE
+                        WHEN COUNT(*) FILTER (WHERE payedflg = 1)
+                             = COUNT(*) THEN 'X'
+                        ELSE NULL
+                    END AS paid
+                    FROM orderb_orderdtl
+                    WHERE orderid = @orderid;
+                ";
+
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+                conn.Open();
+
+                using var cmd = new NpgsqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("orderid", orderid);
+
+                var result = cmd.ExecuteScalar()?.ToString();
+
+                return result == "X";
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }

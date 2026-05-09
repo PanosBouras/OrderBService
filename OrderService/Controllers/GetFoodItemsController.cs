@@ -1,7 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
-using Oracle.ManagedDataAccess.Client;
-using static OrderService.Controllers.GetFoodItemsController;
+using Npgsql;
 
 namespace OrderService.Controllers
 {
@@ -9,86 +8,134 @@ namespace OrderService.Controllers
     [Route("[controller]")]
     public class GetFoodItemsController : Controller
     {
-
         public class FoodItem
         {
             public string Id { get; set; }
-            public String Name { get; set; }
-            public String CategoryId { get; set; }
-            public String SortOrder { get; set; }
-            public String ItemDescription { get; set; }
-            public String Price { get; set; }
+            public string Name { get; set; }
+            public string CategoryId { get; set; }
+            public string SortOrder { get; set; }
+            public string ItemDescription { get; set; }
+            public string Price { get; set; }
         }
 
-
-        [HttpGet(Name = "GetFoodItems")]
+        [HttpGet(Name ="GetFoodItems")]
         public async Task<string> GetFoodItems()
         {
-            string jsonString = "";
-
             List<FoodItem> orderFoodItems = new List<FoodItem>();
-            using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
+
+            try
             {
-                try
+                await using (NpgsqlConnection connection = new NpgsqlConnection(ConnectionString.Value))
                 {
-                    connection.Open();
+                    await connection.OpenAsync();
+
                     string query = @"SELECT 
-                                    null as ITEMID,
-                                        CAST(CATEGORYNAME AS VARCHAR2(4000)) AS NAME, 
-                                        null as PRICE,
-                                        CAST(CATEGORYID AS NUMBER) AS CATEGORYID, 
-                                        0 AS SORT_ORDER, 
-                                        CAST(NULL AS VARCHAR2(4000)) AS ITEMDESCRIPTION
-                                    FROM ORDERB_ITEM_CATEGORY
-                                    WHERE TYPEID = 1
+                            NULL AS itemid,
+                            categoryname AS name,
+                            NULL AS price,
+                            categoryid,
+                            0 AS sort_order,
+                            NULL AS itemdescription
+                        FROM orderb_item_category
+                        WHERE typeid = 1
 
-                                    UNION ALL
+                        UNION ALL
 
-                                    SELECT 
-                                    ITEMID,
-                                        CAST('   ' || ITEMNAME AS VARCHAR2(4000)) AS NAME, 
-                                        PRICE,
-                                        CAST(ITEMCATEGORYID AS NUMBER) AS CATEGORYID, 
-                                        1 AS SORT_ORDER, 
-                                        CAST(ITEMDESCRIPTION AS VARCHAR2(4000)) AS ITEMDESCRIPTION
-                                    FROM ORDERB_ITEM
-                                    WHERE ITEMTYPEID = 1
-                                    AND ACTIVEFLG=1
-                                    ORDER BY CATEGORYID, SORT_ORDER, NAME";
+                        SELECT 
+                            itemid,
+                            ('   ' || itemname) AS name,
+                            price,
+                            itemcategoryid AS categoryid,
+                            1 AS sort_order,
+                            itemdescription AS itemdescription
+                        FROM orderb_item
+                        WHERE itemtypeid = 1
+                          AND activeflg = 1
 
-                    using (OracleCommand command = new OracleCommand(query, connection))
+                        ORDER BY categoryid, sort_order, name";
+
+                    await using (NpgsqlCommand command = new NpgsqlCommand(query, connection))
                     {
-                        using (OracleDataReader reader = command.ExecuteReader())
+                        await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync())
                         {
-                            while (reader.Read())
+                            while (await reader.ReadAsync())
                             {
-                                FoodItem Oi = new FoodItem
+                                FoodItem oi = new FoodItem
                                 {
-                                    Id = reader["ITEMID"].ToString(),
-                                    Name = reader["NAME"].ToString(),
-                                    CategoryId = reader["CATEGORYID"].ToString(),
-                                    SortOrder = reader["SORT_ORDER"].ToString(),
-                                    ItemDescription = reader["ITEMDESCRIPTION"].ToString(),
-                                    Price = reader["PRICE"].ToString()
+                                    Id = reader["itemid"]?.ToString(),
+                                    Name = reader["name"]?.ToString(),
+                                    CategoryId = reader["categoryid"]?.ToString(),
+                                    SortOrder = reader["sort_order"]?.ToString(),
+                                    ItemDescription = reader["itemdescription"]?.ToString(),
+                                    Price = reader["price"]?.ToString()
                                 };
 
-                                orderFoodItems.Add(Oi);
+                                orderFoodItems.Add(oi);
                             }
                         }
                     }
-                    jsonString = JsonConvert.SerializeObject(orderFoodItems, Formatting.Indented);
+                }
 
-                }
-                catch (Exception ex)
-                {
-                    // Handle exceptions (log them, rethrow them, etc.)
-                    Console.WriteLine(ex.Message);
-                    // You may want to return an error message or handle it differently
-                }
+                return JsonConvert.SerializeObject(orderFoodItems, Formatting.Indented);
             }
-
-            return jsonString;
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+                return JsonConvert.SerializeObject(new { status = "false", message = ex.Message });
+            }
         }
-    
-}
+
+        [HttpGet("GetAll")]
+        public async Task<string> GetAllFoodItems(int companyid)
+        {
+            List<FoodItem> orderFoodItems = new List<FoodItem>();
+
+            try
+            {
+                await using (NpgsqlConnection connection = new NpgsqlConnection(ConnectionString.Value))
+                {
+                    await connection.OpenAsync();
+
+                    string query = @"SELECT 
+                            itemid,
+                            itemname AS name,
+                            price,
+                            itemcategoryid AS categoryid,
+                            itemdescription AS itemdescription
+                        FROM orderb_item
+                        WHERE itemtypeid = 1
+                        and  companyid = @companyid";
+
+                    await using (NpgsqlCommand command = new NpgsqlCommand(query, connection))
+                    {
+                        command.Parameters.AddWithValue("pi_companyid", companyid);
+
+                        await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                FoodItem oi = new FoodItem
+                                {
+                                    Id = reader["itemid"]?.ToString(),
+                                    Name = reader["name"]?.ToString(),
+                                    CategoryId = reader["categoryid"]?.ToString(),
+                                    ItemDescription = reader["itemdescription"]?.ToString(),
+                                    Price = reader["price"]?.ToString()
+                                };
+
+                                orderFoodItems.Add(oi);
+                            }
+                        }
+                    }
+                }
+
+                return JsonConvert.SerializeObject(orderFoodItems, Formatting.Indented);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+                return JsonConvert.SerializeObject(new { status = "false", message = ex.Message });
+            }
+        }
+    }
 }

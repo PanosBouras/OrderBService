@@ -1,11 +1,5 @@
-﻿using System.Data;
-using System.Xml.Linq;
-using Microsoft.AspNetCore.Mvc;
-using Newtonsoft.Json;
-using Oracle.ManagedDataAccess.Client;
-using static OrderService.Controllers.GetOrderItemsController;
-using static OrderService.Controllers.PostCreateOrder;
-using static OrderService.Controllers.PostPaymentRequest;
+﻿using Microsoft.AspNetCore.Mvc;
+using Npgsql;
 
 namespace OrderService.Controllers
 {
@@ -18,39 +12,38 @@ namespace OrderService.Controllers
         {
             try
             {
-                String update = "UPDATE ORDERB_ORDERHDR SET PERSONS = :pi_personNumber WHERE COMPANYID = :pi_companyid AND TABLEID = :pi_tableid ";
-                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-                using (OracleCommand command = new OracleCommand(update, connection))
+                string sql = @"
+                    UPDATE orderb_orderhdr
+                    SET persons = @persons
+                    WHERE companyid = @companyid
+                      AND tableid = @tableid;
+                ";
+
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+                await conn.OpenAsync();
+
+                using var cmd = new NpgsqlCommand(sql, conn);
+
+                cmd.Parameters.AddWithValue("persons", personNumber);
+                cmd.Parameters.AddWithValue("companyid", companyId);
+                cmd.Parameters.AddWithValue("tableid", tableId);
+
+                await cmd.ExecuteNonQueryAsync();
+
+                return Json(new
                 {
-                    command.Parameters.Add("pi_personNumber", personNumber);
-                    command.Parameters.Add("pi_companyid", companyId);
-                    command.Parameters.Add("pi_tableid", tableId);
-                    command.Connection.Open();
-                    try
-                    {
-                       command.ExecuteNonQuery();
-                    }
-                    catch(Exception ex2)
-                    {
-                        return Json(new
-                        {
-                            success = "ERROR",
-                            message = ex2.Message,
-                            stack = ex2.StackTrace
-                        });
-                    }
-                    command.Connection.Close();
-                }
+                    success = "OK"
+                });
             }
             catch (Exception ex)
             {
-               
+                return Json(new
+                {
+                    success = "ERROR",
+                    message = ex.Message,
+                    stack = ex.StackTrace
+                });
             }
-            return Json(new
-            {
-                success = "OK"
-            });
         }
-
     }
 }

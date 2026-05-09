@@ -1,10 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
-using Oracle.ManagedDataAccess.Client;
+using Npgsql;
 using OrderService.Hubs;
-using System.Collections.Generic;
-using System.ComponentModel.Design;
-using static OrderService.Controllers.PostCreateOrder;
 
 namespace OrderService.Controllers
 {
@@ -20,25 +17,39 @@ namespace OrderService.Controllers
         }
 
         [HttpPost(Name = "PostDeleteOrder")]
-        public async Task PostDeleteItemOrderAsync(String companyID, String tableid,String username)
+        public async Task PostDeleteOrderAsync(string companyID, string tableid, string username)
         {
-            String delqry = "BEGIN DeleteOrder(:pi_tableid,:pi_username); END;";
-            using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-            using (OracleCommand command = new OracleCommand(delqry, connection))
+            try
             {
-                command.Parameters.Add("pi_tableid", tableid);
-                command.Parameters.Add("pi_username", username);
-                command.Connection.Open();
-                int rows = command.ExecuteNonQuery();
-                if (rows > 0)
+                await using (var connection = new NpgsqlConnection(ConnectionString.Value))
                 {
-                    await _hubContext.Clients
-                        .Group(companyID)
-                        .SendAsync("ReceiveOrdersDeleteOrder", "Deleted order table:" + tableid);
+                    await connection.OpenAsync();
+
+                    // call PostgreSQL procedure
+                    string callProc = "CALL deleteorder(@tableid, @username);";
+
+                    await using (var command = new NpgsqlCommand(callProc, connection))
+                    {
+                        command.Parameters.AddWithValue("tableid", int.Parse(tableid));
+                        command.Parameters.AddWithValue("username", username);
+
+                        int rows = await command.ExecuteNonQueryAsync();
+
+                        // NOTE: PostgreSQL CALL returns -1 usually (no affected rows)
+                        if (rows >= -1)
+                        {
+                            await _hubContext.Clients
+                                .Group(companyID)
+                                .SendAsync("ReceiveOrdersDeleteOrder",
+                                    "Deleted order table:" + tableid);
+                        }
+                    }
                 }
-                command.Connection.Close();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
             }
         }
-
-        }
+    }
 }

@@ -1,12 +1,11 @@
 ﻿using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
-using Oracle.ManagedDataAccess.Client;
+using Npgsql;
 using BCrypt.Net;
 
 namespace OrderService.Controllers
-{ 
-
+{
     [ApiController]
     [Route("[controller]")]
     public class LoginController : Controller
@@ -31,50 +30,48 @@ namespace OrderService.Controllers
             string companyID = "";
             string hUsername = "";
             int numbersOfTables = 0;
-            string hashedPasswordFromDB = "";
-             
-            string hashedUsername = ComputeSha256Hash(username);
+            string encryptedPasswordFromDB = "";
 
             try
             {
-                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
+                await using var connection = new NpgsqlConnection(ConnectionString.Value);
+                await connection.OpenAsync();
+
+                string query = @"
+            SELECT u.id,
+                   u.password,
+                   u.h_username,
+                   COALESCE(c.numoftables, 0) AS numoftables,
+                   c.companyid
+            FROM orderb_users u
+            JOIN orderb_companyinfo c ON c.companyid = u.companyid
+            WHERE u.username = @username
+              AND u.active = 1";
+
+                await using var command = new NpgsqlCommand(query, connection);
+                command.Parameters.AddWithValue("username", username); // UNHASHED username
+
+                await using var reader = await command.ExecuteReaderAsync();
+
+                if (await reader.ReadAsync())
                 {
-                    connection.Open();
-                     
-                    string query = @"
-                        SELECT u.ID, u.PASSWORD, u.H_USERNAME,
-                               NVL(c.NUMOFTABLES, 0) AS NUMOFTABLES,
-                               c.COMPANYID
-                        FROM   ORDERB_USERS u
-                               JOIN ORDERB_COMPANYINFO c ON c.COMPANYID = u.COMPANYID
-                        WHERE  u.USERNAME = :pi_username
-                        AND    u.ACTIVE   = 1";
-
-                    using (OracleCommand command = new OracleCommand(query, connection))
-                    {
-                        command.Parameters.Add(new OracleParameter("pi_username", hashedUsername));
-
-                        using (OracleDataReader reader = command.ExecuteReader())
-                        {
-                            if (reader.Read())
-                            {
-                                userid = reader["ID"].ToString();
-                                hashedPasswordFromDB = reader["PASSWORD"].ToString();
-                                hUsername = reader["H_USERNAME"].ToString();
-                                numbersOfTables = Convert.ToInt32(reader["NUMOFTABLES"]);
-                                companyID = reader["COMPANYID"].ToString();
-                            }
-                        }
-                    }
+                    userid = reader["id"].ToString();
+                    encryptedPasswordFromDB = reader["password"].ToString();
+                    hUsername = reader["h_username"].ToString();
+                    numbersOfTables = Convert.ToInt32(reader["numoftables"]);
+                    companyID = reader["companyid"].ToString();
                 }
             }
             catch (Exception ex)
             {
-                return Json(new { status = "false", message = "Database error: " + ex.Message });
+                return Json(new { status = "false", message = ex.Message });
             }
-             
-            if (!string.IsNullOrEmpty(hashedPasswordFromDB) &&
-                BCrypt.Net.BCrypt.Verify(password, hashedPasswordFromDB))
+
+            string decryptedPassword = "";
+            if (!string.IsNullOrEmpty(encryptedPasswordFromDB))
+                decryptedPassword = AesCrypto.Decrypt(encryptedPasswordFromDB);
+
+            if (password == decryptedPassword)
             {
                 status = "true";
             }
@@ -87,7 +84,7 @@ namespace OrderService.Controllers
             {
                 status,
                 companyID,
-                username = username,
+                username,
                 userId = userid,
                 totalTables = numbersOfTables
             });

@@ -1,11 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Newtonsoft.Json;
-using Oracle.ManagedDataAccess.Client;
+using Npgsql;
 using OrderService.Hubs;
-using System.Data;
-using static OrderService.Controllers.GetOrderItemsController;
-using static OrderService.Controllers.PostCreateOrder;
 
 namespace OrderService.Controllers
 {
@@ -13,13 +10,13 @@ namespace OrderService.Controllers
     [Route("[controller]")]
     public class PostCreateOrder : Controller
     {
-
         private readonly IHubContext<OrdersHub> _hubContext;
 
         public PostCreateOrder(IHubContext<OrdersHub> hubContext)
         {
             _hubContext = hubContext;
         }
+
         public class Orderitems
         {
             public string itemId { get; set; }
@@ -29,229 +26,191 @@ namespace OrderService.Controllers
             public double price { get; set; }
         }
 
-
-
         [HttpPost(Name = "PostCreateOrder")]
-        public async Task PostCreateOrderAsync(int companyid, int tableId, String userid, String username, int persons, [FromBody] List<Orderitems> orderJson)
+        public async Task PostCreateOrderAsync(
+            int companyid,
+            int tableId,
+            string userid,
+            string username,
+            int persons,
+            [FromBody] List<Orderitems> orderJson)
         {
-            String orderid = "";
-            orderid =  gtOrderid(tableId, companyid);
+            string orderid = await GetOrderId(tableId, companyid);
 
-            if (String.IsNullOrEmpty(orderid))// An dld den yparxei kapoio status 0 (ara energo trapezi gia to sygkekrimeno trapezi) ftiakse nea paraggelia sto trapezi
+            if (string.IsNullOrEmpty(orderid))
             {
-                String insrt = "INSERT INTO ORDERB_ORDERHDR(ORDERID,TABLEID,CREATEDATE,STATUSFLG,CREATEUSER,PERSONS,COMPANYID) VALUES ((SELECT TO_CHAR(SYSDATE,'ddMMyyHHmiss') FROM DUAL),:pi_tableid,sysdate,0,:pi_username,NVL(:pi_persons,1),:pi_companyid)";
-                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-                using (OracleCommand command = new OracleCommand(insrt, connection))
+                string insertHeader = @"
+                    INSERT INTO orderb_orderhdr
+                    (orderid, tableid, createdate, statusflg, createuser, persons, companyid)
+                    VALUES
+                    (to_char(now(), 'DDMMYYHH24MISS'),
+                     @tableid,
+                     now(),
+                     0,
+                     @username,
+                     COALESCE(@persons,1),
+                     @companyid)";
+
+                await using (var connection = new NpgsqlConnection(ConnectionString.Value))
                 {
-                    command.Parameters.Add("pi_tableid", tableId);
-                    command.Parameters.Add("pi_username", username);
-                    command.Parameters.Add("pi_persons", persons);
-                    command.Parameters.Add("pi_companyid", companyid);
+                    await connection.OpenAsync();
 
-                    command.Connection.Open();
-                    command.ExecuteNonQuery();
-                    command.Connection.Close();
+                    await using (var command = new NpgsqlCommand(insertHeader, connection))
+                    {
+                        command.Parameters.AddWithValue("tableid", tableId);
+                        command.Parameters.AddWithValue("username", username);
+                        command.Parameters.AddWithValue("persons", persons);
+                        command.Parameters.AddWithValue("companyid", companyid);
+
+                        await command.ExecuteNonQueryAsync();
+                    }
                 }
-                orderid = gtOrderid(tableId, companyid);
 
-                DeserilizeToOrderDTL(companyid,tableId, orderid, orderJson, userid, username);
+                orderid = await GetOrderId(tableId, companyid);
+                await InsertOrderDetails(companyid, tableId, orderid, orderJson, userid, username);
             }
-            else//Allios sthn yparxousa paraggelia prosthese nea items
+            else
             {
-                DeserilizeToOrderDTL(companyid,tableId, orderid, orderJson, userid, username);
-
+                await InsertOrderDetails(companyid, tableId, orderid, orderJson, userid, username);
             }
         }
 
-        private String gtOrderid(int tableId, int companyID)
+        private async Task<string> GetOrderId(int tableId, int companyID)
         {
-            String orderid = "";
-            using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-            {
-                try
-                {
-                    connection.Open();
-                    string query = @"SELECT ORDERID FROM ORDERB_ORDERHDR WHERE TABLEID = :pi_tableid AND STATUSFLG =0 AND COMPANYID = :pi_companyid ";
+            string orderid = "";
 
-                    using (OracleCommand command = new OracleCommand(query, connection))
+            try
+            {
+                await using (var connection = new NpgsqlConnection(ConnectionString.Value))
+                {
+                    await connection.OpenAsync();
+
+                    string query = @"
+                        SELECT orderid
+                        FROM orderb_orderhdr
+                        WHERE tableid = @tableid
+                          AND statusflg = 0
+                          AND companyid = @companyid
+                        ORDER BY orderid DESC
+                        LIMIT 1";
+
+                    await using (var command = new NpgsqlCommand(query, connection))
                     {
-                        command.Parameters.Add(new OracleParameter("pi_tableid", tableId));
-                        command.Parameters.Add(new OracleParameter("pi_companyid", companyID));
-                        using (OracleDataReader reader = command.ExecuteReader())
+                        command.Parameters.AddWithValue("tableid", tableId);
+                        command.Parameters.AddWithValue("companyid", companyID);
+
+                        await using (var reader = await command.ExecuteReaderAsync())
                         {
-                            while (reader.Read())
+                            if (await reader.ReadAsync())
                             {
-                                orderid = reader["ORDERID"].ToString();
+                                orderid = reader["orderid"]?.ToString();
                             }
                         }
                     }
                 }
-                catch (Exception ex)
-                {
-
-                }
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+
             return orderid;
         }
 
-
-        private void DeserilizeToOrderDTL(int companyid, int orderTableID, String orderID, List<Orderitems> items, String userid, String username)
-        { 
+        private async Task InsertOrderDetails(
+            int companyid,
+            int orderTableID,
+            string orderID,
+            List<Orderitems> items,
+            string userid,
+            string username)
+        {
             foreach (var item in items)
             {
-
-                if (item.quantity > 1)
+                for (int i = 0; i < item.quantity; i++)
                 {
-                    for (int i = 0; i < item.quantity; i++)
-                    {
-                        // Εκτύπωση για κάθε ποσότητα
-                        Console.WriteLine($"Item {item.name.Trim()} (ID: {item.itemId}), Quantity: {item.quantity}, Comment: {item.comment}");
-                        InsertOrderDTL(orderID, item.itemId,item.price, item.comment, orderTableID, username, userid,companyid);
-                    }
-                }
-                else
-                {
-                    // Αν η ποσότητα είναι 1, απλά εκτυπώνουμε
-                    Console.WriteLine($"Item {item.name.Trim()} (ID: {item.itemId}), Quantity: {item.quantity}, Comment: {item.comment}");
-                    InsertOrderDTL(orderID, item.itemId, item.price, item.comment, orderTableID, username, userid,companyid);
-
+                    await InsertOrderDTL(orderID, item, orderTableID, username, userid, companyid);
                 }
             }
         }
 
-        private async void InsertOrderDTL(String orderid, String itemid, double price ,String comments, int ordertable,String username, String userid, int companyid)
+        private async Task InsertOrderDTL(
+            string orderid,
+            Orderitems item,
+            int ordertable,
+            string username,
+            string userid,
+            int companyid)
         {
-            String itemname = "";
-            //double itemprice = 0.0;
-            String orderItemDTL = "";
-            String companyID = "";
-            try
-            {
-                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-                {
-                    connection.Open();
-                    string query = @"SELECT COMPANYID FROM ORDERB_USERS WHERE ID = :pi_userid";
+            string itemname = "";
 
-                    using (OracleCommand command = new OracleCommand(query, connection))
+            // get item name
+            await using (var connection = new NpgsqlConnection(ConnectionString.Value))
+            {
+                await connection.OpenAsync();
+
+                string q = @"SELECT itemname FROM orderb_item WHERE itemid = @itemid";
+
+                await using (var cmd = new NpgsqlCommand(q, connection))
+                {
+                    cmd.Parameters.AddWithValue("itemid", item.itemId);
+
+                    await using (var reader = await cmd.ExecuteReaderAsync())
                     {
-                        command.Parameters.Add(new OracleParameter("pi_userid", userid));
-                        using (OracleDataReader reader = command.ExecuteReader())
+                        if (await reader.ReadAsync())
                         {
-                            while (reader.Read())
-                            {
-                                companyID = reader["COMPANYID"].ToString();
-                            }
+                            itemname = reader["itemname"]?.ToString();
                         }
                     }
                 }
             }
-            catch (Exception ex)
-            {
 
-            }
-            try
+            string unique = (DateTime.UtcNow.Ticks % 100000).ToString("D5");
+            string orderDtlSeq = orderid + unique;
+
+            string insert = @"
+                INSERT INTO orderb_orderdtl
+                (orderid, orderitemid, orderitemname, orderitemdescription,
+                 payedflg, deletedflg, price, ordertable,
+                 createduser, status, orderdtlitemisseq, createdate, companyid)
+                VALUES
+                (@orderid, @itemid, @itemname, @comments,
+                 NULL, 0, @price, @ordertable,
+                 @username, 1, @seq, now(), @companyid)";
+
+            await using (var connection = new NpgsqlConnection(ConnectionString.Value))
             {
-                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
+                await connection.OpenAsync();
+
+                await using (var cmd = new NpgsqlCommand(insert, connection))
                 {
-                    connection.Open();
-                    string query = @"SELECT ITEMNAME ,PRICE FROM ORDERB_ITEM WHERE ITEMID = :pi_itemid";
+                    cmd.Parameters.AddWithValue("orderid", orderid);
+                    cmd.Parameters.AddWithValue("itemid", item.itemId);
+                    cmd.Parameters.AddWithValue("itemname", itemname);
+                    cmd.Parameters.AddWithValue("comments", item.comment ?? "");
+                    cmd.Parameters.AddWithValue("price", item.price);
+                    cmd.Parameters.AddWithValue("ordertable", ordertable);
+                    cmd.Parameters.AddWithValue("username", username);
+                    cmd.Parameters.AddWithValue("seq", orderDtlSeq);
+                    cmd.Parameters.AddWithValue("companyid", companyid);
 
-                    using (OracleCommand command = new OracleCommand(query, connection))
-                    {
-                        command.Parameters.Add(new OracleParameter("pi_itemid", itemid));
-                        using (OracleDataReader reader = command.ExecuteReader())
-                        {
-                            while (reader.Read())
-                            {
-                                itemname = reader["ITEMNAME"].ToString();
-                               // itemprice = Double.Parse(reader["PRICE"].ToString());
-                            }
-                        }
-                    }
+                    await cmd.ExecuteNonQueryAsync();
                 }
             }
-            catch (Exception ex)
-            {
 
-            }
-
-            /*            try
-                        {
-                            using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-                            {
-                                connection.Open();
-                                string query = @"SELECT CONCAT(:pi_companyID,CONCAT(ORDERTABLE,CONCAT(ORDERID,COUNT(ORDERID)))) AS ORDERDTLITEMISSEQ  FROM ORDERB_ORDERDTL WHERE ORDERID = :pi_orderid AND ORDERITEMID = :pi_orderitemid GROUP BY ORDERID,ORDERTABLE";
-
-                                using (OracleCommand command = new OracleCommand(query, connection))
-                                {
-                                    command.Parameters.Add(new OracleParameter("pi_companyID", companyID));
-                                    command.Parameters.Add(new OracleParameter("pi_orderid", orderid));
-                                    command.Parameters.Add(new OracleParameter("pi_orderitemid", itemid));
-                                    using (OracleDataReader reader = command.ExecuteReader())
-                                    {
-                                        while (reader.Read())
-                                        {
-                                            orderItemDTL = reader["ORDERDTLITEMISSEQ"].ToString(); 
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-
-                        }*/
-            //Thread.Sleep(1000);
-
-
-            DateTime now = DateTime.Now;
-
-            // Εξαγάγουμε τα δευτερόλεπτα και τα χιλιοστά του δευτερολέπτου
-            int seconds = now.Second;
-            int milliseconds = now.Millisecond;
-
-            // Συνδυάζουμε τα δύο για να πάρουμε μια μοναδική τιμή
-            string randomUniqNumber = (DateTime.UtcNow.Ticks % 100000).ToString("D5");
-            string orderidPLUSrandomUniqNumber = orderid + randomUniqNumber;
-            try
-            {
-                String insrt = @"INSERT INTO ORDERB_ORDERDTL (ORDERID,ORDERITEMID,ORDERITEMNAME,ORDERITEMDESCRIPTION,PAYEDFLG,DELETEDFLG,PRICE,ORDERTABLE,CREATEDUSER,STATUS,ORDERDTLITEMISSEQ,CREATEDATE,COMPANYID)
-                                                     VALUES(:pi_orderid,:pi_itemid, :pi_itemname , :pi_comments, null,0, :pi_itemprice, :pi_ordertable,:pi_username,1,:pi_orderItemDTL,sysdate,:pi_companyid )";
-                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-                using (OracleCommand command = new OracleCommand(insrt, connection))
+            await _hubContext.Clients
+                .Group(companyid.ToString())
+                .SendAsync("ReceiveOrdersInsert", new
                 {
-                    command.Parameters.Add("pi_orderid", orderid);
-                    command.Parameters.Add("pi_itemid", itemid);
-                    command.Parameters.Add("pi_itemname", itemname);
-                    command.Parameters.Add("pi_comments", comments );
-                    command.Parameters.Add("pi_itemprice", price);
-                    command.Parameters.Add("pi_ordertable", ordertable);
-                    command.Parameters.Add("pi_username", username);
-                    command.Parameters.Add("pi_orderItemDTL", orderidPLUSrandomUniqNumber);
-                    command.Parameters.Add("pi_companyid", companyID);
-                    command.Connection.Open();
-                    int rows = command.ExecuteNonQuery();
-                    if (rows > 0)
-                    {
-                        await _hubContext.Clients
-                            .Group(companyID)
-                            .SendAsync("ReceiveOrdersInsert", new
-                            {
-                                orderid,
-                                itemid,
-                                itemname,
-                                comments,
-                                price,
-                                ordertable,
-                                username,
-                                orderidPLUSrandomUniqNumber
-                            });
-                    }
-                    command.Connection.Close();
-                }
-            }
-            catch (Exception ex) { Console.WriteLine(ex.ToString()); }
+                    orderid,
+                    item.itemId,
+                    itemname,
+                    item.comment,
+                    item.price,
+                    ordertable,
+                    username,
+                    orderDtlSeq
+                });
         }
-
     }
 }
