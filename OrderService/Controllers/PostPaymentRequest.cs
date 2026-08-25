@@ -1,12 +1,8 @@
-﻿using System.Data;
-using System.Xml.Linq;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Newtonsoft.Json;
-using Oracle.ManagedDataAccess.Client;
-using static OrderService.Controllers.GetOrderItemsController;
-using static OrderService.Controllers.PostCreateOrder;
-using static OrderService.Controllers.PostPaymentRequest;
-
+using Npgsql;
+using OrderService.Hubs;
 
 namespace OrderService.Controllers
 {
@@ -14,7 +10,6 @@ namespace OrderService.Controllers
     [ApiController]
     public class PostPaymentRequest : ControllerBase
     {
-
         public class PaymentInfo
         {
             public double Card { get; set; }
@@ -22,110 +17,199 @@ namespace OrderService.Controllers
             public Item[] Items { get; set; }
             public string OrderId { get; set; }
         }
-
+        private class OrderInfo
+        {
+            public int TableId { get; set; }
+            public int CompanyId { get; set; }
+        }
         public class Item
         {
             public string OrderDTLSeq { get; set; }
             public double Price { get; set; }
         }
 
+        private readonly IHubContext<TableHub> _tableHubContext;
+
+        public PostPaymentRequest(
+            IHubContext<TableHub> tableHubContext)
+        {
+            _tableHubContext = tableHubContext;
+        }
 
         [HttpPost(Name = "PostPaymentRequest")]
-        public async Task<Boolean> PostPaymentRequestAsync(String username, [FromBody] PaymentInfo Json)
-        { 
-                updateOrderDTL(Json,username); 
-            
-            if (checkForUpdateOrderHDR(Json.OrderId))
+        public async Task<bool> PostPaymentRequestAsync(string username,[FromBody] PaymentInfo json)
+        {
+            UpdateOrderDTL(json, username);
+            UpdateOrderHDR(json.OrderId,username,json.Cash,json.Card);
+
+            if (CheckForUpdateOrderHDR(json.OrderId))
             {
-                updateOrderHDR(Json.OrderId,username,Json.Cash,Json.Card);
+                var orderInfo = GetOrderInfo(json.OrderId);
+
+
+                await UpdateTableStatus(orderInfo.CompanyId,orderInfo.TableId,0);
+
                 return true;
             }
+
             return false;
         }
 
-        private void updateOrderDTL(PaymentInfo Pi,String username)
+        private async Task UpdateTableStatus( int companyId,int tableId,int status)
         {
             try
             {
-                String insrt = @"UPDATE ORDERB_ORDERDTL SET PAYEDFLG = 1 , PAYEDUSER = :pi_username , PAYEDDATE = SYSDATE , PRICE = :pi_price WHERE ORDERDTLITEMISSEQ = :pi_orderdtlitemseq";
-             for(int i = 0;i< Pi.Items.Length; i++) {
-                    using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-                    using (OracleCommand command = new OracleCommand(insrt, connection))
-                    {
-                        command.Parameters.Add("pi_username", username);
-                        command.Parameters.Add("pi_price", Pi.Items[i].Price);
-                        command.Parameters.Add("pi_orderdtlitemseq", Pi.Items[i].OrderDTLSeq);
+                await using var conn = new NpgsqlConnection(ConnectionString.Value);
 
-                        command.Connection.Open();
-                        int rows = command.ExecuteNonQuery();
-                        command.Connection.Close();
-                    }
-                }
+                await conn.OpenAsync();
+
+                string sql = @"UPDATE orderb_tables
+                                SET status = @status
+                                WHERE tableid = @tableid
+                                  AND companyid = @companyid";
+
+                await using var cmd = new NpgsqlCommand(sql, conn);
+
+                cmd.Parameters.AddWithValue("status",status);
+                cmd.Parameters.AddWithValue("tableid",tableId);
+                cmd.Parameters.AddWithValue("companyid",companyId);
+
+                await cmd.ExecuteNonQueryAsync();
+
+                Console.WriteLine($"Table {tableId} updated to status {status}");
+
+                await _tableHubContext.Clients.Group(companyId.ToString()).SendAsync("ReceiveOrderNewTable",new{tableId,newStatus = status});
+
+                Console.WriteLine($"ReceiveOrderNewTable sent to company {companyId}");
             }
-            catch (Exception ex) { Console.WriteLine(ex.ToString()); }
-        }
-        private void updateOrderHDR(String orderid,String username,double cash, double card)
-        {
-            try
+            catch (Exception ex)
             {
-                double totalprice = 0;
-                totalprice = cash + card;
-                String insrt = @"UPDATE ORDERB_ORDERHDR SET STATUSFLG = 1 , PAYEDUSER = :pi_username , PAYEDDATE = SYSDATE , TOTALPRICE = :pi_totalprice ,TOTALCASHPRICE = :pi_totalcash , TOTALCARDPRICE = :pi_totalcard WHERE ORDERID = :pi_orderid"; 
-                    using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-                    using (OracleCommand command = new OracleCommand(insrt, connection))
-                    {
-                        command.Parameters.Add("pi_username", username); 
-                        command.Parameters.Add("pi_totalprice", totalprice);
-                        command.Parameters.Add("pi_totalcash", cash); 
-                        command.Parameters.Add("pi_totalcard", card);
-                        command.Parameters.Add("pi_orderid", orderid);
-
-                    command.Connection.Open();
-                        int rows = command.ExecuteNonQuery();
-                        command.Connection.Close();
-                    } 
+                Console.WriteLine($"UpdateTableStatus: {ex}");
             }
-            catch (Exception ex) { Console.WriteLine(ex.ToString()); }
         }
 
-        private bool checkForUpdateOrderHDR(String orderid)
+        private OrderInfo GetOrderInfo(string orderid)
         {
-            String haspaid = "";
             try
             {
-                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+
+                conn.Open();
+
+                string sql = @" SELECT tableid, companyid FROM orderb_orderhdr WHERE orderid = @orderid";
+
+                using var cmd = new NpgsqlCommand(sql, conn);
+
+                cmd.Parameters.AddWithValue("orderid",orderid);
+
+                using var reader = cmd.ExecuteReader();
+
+                if (reader.Read())
                 {
-                    connection.Open();
-                    string query = @"SELECT 'X' AS PAID
-                                            FROM DUAL
-                                            WHERE (SELECT COUNT(*) 
-                                                   FROM ORDERB_ORDERDTL 
-                                                   WHERE ORDERID = :pi_orderid AND PAYEDFLG = 1) 
-                                                  = (SELECT COUNT(*) 
-                                                     FROM ORDERB_ORDERDTL 
-                                                     WHERE ORDERID = :pi_orderid)";
-
-                    using (OracleCommand command = new OracleCommand(query, connection))
+                    return new OrderInfo
                     {
-                        command.Parameters.Add(new OracleParameter("pi_orderid", orderid));
-                        using (OracleDataReader reader = command.ExecuteReader())
-                        {
-                            while (reader.Read())
-                            {
-                                haspaid = reader["PAID"].ToString(); 
-                            }
-                        }
-                    }
+                        TableId = Convert.ToInt32(reader["tableid"]),
+                        CompanyId =Convert.ToInt32(reader["companyid"])
+                    };
                 }
             }
             catch (Exception ex)
             {
-                return false;
-
+                Console.WriteLine($"GetOrderInfo: {ex}");
             }
-            if (haspaid=="X")
-                return true;
-            return false;
+
+            return null;
+        }
+
+        private void UpdateOrderDTL(PaymentInfo pi, string username)
+        {
+            try
+            {
+                string sql = @"UPDATE orderb_orderdtl
+                                    SET payedflg = 1,
+                                        payeduser = @username,
+                                        payeddate = NOW(),
+                                        price = @price
+                                    WHERE orderdtlitemisseq = @seq;";
+
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+                conn.Open();
+
+                foreach (var item in pi.Items)
+                {
+                    using var cmd = new NpgsqlCommand(sql, conn);
+                    cmd.Parameters.AddWithValue("username", username);
+                    cmd.Parameters.AddWithValue("price", item.Price);
+                    cmd.Parameters.AddWithValue("seq", item.OrderDTLSeq);
+
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+            }
+        }
+
+        private void UpdateOrderHDR(string orderid, string username, double cash, double card)
+        {
+            try
+            {
+                double total = cash + card;
+
+                string sql = @"UPDATE orderb_orderhdr
+                                SET statusflg = 1,
+                                    payeduser = @username,
+                                    payeddate = NOW(),
+                                    totalprice = @total,
+                                    totalcashprice = @cash,
+                                    totalcardprice = @card
+                                WHERE orderid = @orderid;";
+
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+                conn.Open();
+
+                using var cmd = new NpgsqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("username", username);
+                cmd.Parameters.AddWithValue("total", total);
+                cmd.Parameters.AddWithValue("cash", cash);
+                cmd.Parameters.AddWithValue("card", card);
+                cmd.Parameters.AddWithValue("orderid", orderid);
+
+                cmd.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex);
+            }
+        }
+
+        private bool CheckForUpdateOrderHDR(string orderid)
+        {
+            try
+            {
+                string sql = @"SELECT CASE
+                        WHEN COUNT(*) FILTER (WHERE payedflg = 1)
+                             = COUNT(*) THEN 'X'
+                        ELSE NULL
+                    END AS paid
+                    FROM orderb_orderdtl
+                    WHERE orderid = @orderid;";
+
+                using var conn = new NpgsqlConnection(ConnectionString.Value);
+                conn.Open();
+
+                using var cmd = new NpgsqlCommand(sql, conn);
+                cmd.Parameters.AddWithValue("orderid", orderid);
+
+                var result = cmd.ExecuteScalar()?.ToString();
+
+                return result == "X";
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }

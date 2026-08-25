@@ -1,4 +1,6 @@
-bin/
-obj/
-.vscode/
+certbot/
+nginx/
+postgres_data/
 .git/
+**/bin/
+**/obj/

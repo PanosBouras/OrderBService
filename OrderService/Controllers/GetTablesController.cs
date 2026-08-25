@@ -1,5 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Oracle.ManagedDataAccess.Client;
+using Npgsql;
 
 namespace OrderService.Controllers
 {
@@ -7,40 +7,39 @@ namespace OrderService.Controllers
     [Route("[controller]")]
     public class GetTablesController : Controller
     {
-
-            [HttpGet(Name = "PostTables")]
-            public async Task<int> GetTables()
-            {
+        [HttpGet(Name = "PostTables")]
+        public async Task<int> GetTables()
+        {
             int tables = 0;
-            using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
-            {
-                try
-                {
-                    connection.Open();
-                    String Snumtables = "";
-                    string query = "SELECT NVL(NUMOFTABLES,0) NUMOFTABLES FROM ORDERB_COMPANYINFO";
-                    using (OracleCommand command = new OracleCommand(query, connection))
-                    { 
-                        using (OracleDataReader reader = command.ExecuteReader())
-                        {
-                            while (reader.Read())
-                            {
-                                Snumtables = reader["NUMOFTABLES"].ToString();
 
+            try
+            {
+                await using (NpgsqlConnection connection = new NpgsqlConnection(ConnectionString.Value))
+                {
+                    await connection.OpenAsync();
+
+                    string query = @"SELECT COALESCE(numoftables, 0) AS numoftables
+                        FROM orderb_companyinfo
+                        LIMIT 1";
+
+                    await using (NpgsqlCommand command = new NpgsqlCommand(query, connection))
+                    {
+                        await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync())
+                        {
+                            if (await reader.ReadAsync())
+                            {
+                                int.TryParse(reader["numoftables"]?.ToString(), out tables);
                             }
                         }
                     }
-                    Int32.TryParse(Snumtables, out   tables);
-                    return tables;
                 }
-                catch (Exception ex)
-                { 
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
 
-                }
-            }
             return tables;
-               
-            }
         }
-    
+    }
 }
