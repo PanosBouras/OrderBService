@@ -66,7 +66,13 @@ namespace OrderService.Controllers
                         command.Parameters.AddWithValue("@positionid", userJson.positionid);
                         command.Parameters.AddWithValue("@firstname", userJson.firstname ?? "");
                         command.Parameters.AddWithValue("@lastname", userJson.lastname ?? "");
-                        command.Parameters.AddWithValue("@birthday", string.IsNullOrEmpty(userJson.birthday) ? (object)DBNull.Value : DateTime.ParseExact(userJson.birthday, "dd/MM/yyyy", CultureInfo.InvariantCulture));
+                        //command.Parameters.AddWithValue("@birthday", string.IsNullOrEmpty(userJson.birthday) ? (object)DBNull.Value : DateTime.ParseExact(userJson.birthday, "dd/MM/yyyy", CultureInfo.InvariantCulture));
+                        DateTime? birthday = null;
+                        if (!string.IsNullOrEmpty(userJson.birthday))
+                        {
+                            birthday = DateTime.ParseExact(userJson.birthday,"dd/MM/yyyy",CultureInfo.InvariantCulture);
+                        }
+                        command.Parameters.AddWithValue("@birthday",birthday.HasValue ? birthday.Value : (object)DBNull.Value);
                         command.Parameters.AddWithValue("@gender", userJson.gender);
                         command.Parameters.AddWithValue("@phone", userJson.phone ?? "");
                         insert = await command.ExecuteNonQueryAsync();
@@ -133,9 +139,11 @@ namespace OrderService.Controllers
                         command.Parameters.AddWithValue("@positionid", userJson.positionid);
                         command.Parameters.AddWithValue("@firstname", userJson.firstname ?? "");
                         command.Parameters.AddWithValue("@lastname", userJson.lastname ?? "");
-                        DateTime birthday = DateTime.Parse(userJson.birthday, CultureInfo.InvariantCulture);
-                        command.Parameters.AddWithValue("@birthday", string.IsNullOrEmpty(userJson.birthday) ? (object)DBNull.Value : DateTime.ParseExact(userJson.birthday, "dd/MM/yyyy", CultureInfo.InvariantCulture));
-
+                        DateTime? birthday = null;
+                        if (!string.IsNullOrEmpty(userJson.birthday)){
+                            birthday = DateTime.ParseExact(userJson.birthday,"dd/MM/yyyy",CultureInfo.InvariantCulture);
+                        }
+                        command.Parameters.AddWithValue("@birthday",birthday.HasValue ? birthday.Value : (object)DBNull.Value);
                         command.Parameters.AddWithValue("@gender", userJson.gender);
                         command.Parameters.AddWithValue("@phone", userJson.phone ?? "");
 

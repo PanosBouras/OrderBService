@@ -68,10 +68,12 @@ namespace OrderService.Controllers
             }
 
             string decryptedPassword = "";
+            bool validPassword = false;
             if (!string.IsNullOrEmpty(encryptedPasswordFromDB))
-                decryptedPassword = AesCrypto.Decrypt(encryptedPasswordFromDB);
+                validPassword = BCrypt.Net.BCrypt.Verify(password, encryptedPasswordFromDB);
+            // decryptedPassword = AesCrypto.Decrypt(encryptedPasswordFromDB);
 
-            if (password == decryptedPassword)
+            if (validPassword)
             {
                 status = "true";
             }

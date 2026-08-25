@@ -46,44 +46,39 @@ namespace OrderService.Controllers
 
                     string query = @"
                         SELECT
-                            od.orderdtlitemisseq,
-                            od.orderitemdescription,
-                            it.typeid,
-                            it.typename AS item_type,
-                            ic.categoryid,
-                            ic.categoryname AS category_name,
-                            i.itemid,
-                            i.itemname,
-                            od.ordertable,
-                            od.status
-                        FROM orderb_orderdtl od
-                        JOIN orderb_item i
-                            ON i.itemid = od.orderitemid
-                        JOIN orderb_item_category ic
-                            ON ic.categoryid = i.itemcategoryid
-                           AND ic.typeid = i.itemtypeid
-                        JOIN orderb_items_types it
-                            ON it.typeid = i.itemtypeid
-                        WHERE od.payedflg IS NULL
-                          AND od.deletedflg = 0
-                          AND od.status != 3
-                          AND od.createdate BETWEEN NOW() - INTERVAL '1 day' AND NOW()
-                          AND od.companyid = @pi_companyid
-                        GROUP BY
-                            od.orderdtlitemisseq,
-                            od.orderitemdescription,
-                            it.typeid,
-                            it.typename,
-                            ic.categoryid,
-                            ic.categoryname,
-                            i.itemid,
-                            i.itemname,
-                            od.ordertable,
-                            od.status
-                        ORDER BY
-                            it.typeid,
-                            ic.categoryid,
-                            i.itemname";
+    od.orderdtlitemisseq,
+    od.orderitemdescription,
+    it.typeid,
+    it.typename AS item_type,
+    ic.categoryid,
+    ic.categoryname AS category_name,
+    i.itemid,
+    i.itemname,
+    od.ordertable,
+    od.status
+FROM orderb_orderdtl od
+
+LEFT JOIN orderb_item i
+    ON i.itemid = od.orderitemid
+
+LEFT JOIN orderb_item_category ic
+    ON ic.categoryid = i.itemcategoryid
+   AND ic.typeid = i.itemtypeid
+
+LEFT JOIN orderb_items_types it
+    ON it.typeid = i.itemtypeid
+
+WHERE od.payedflg IS NULL
+  AND od.deletedflg = 0
+  AND od.status != 3
+  AND od.createdate >= CURRENT_DATE - INTERVAL '1 day'
+  AND od.companyid = @pi_companyid
+
+ORDER BY
+    it.typeid,
+    ic.categoryid,
+    i.itemname;
+";
 
                     await using (NpgsqlCommand command = new NpgsqlCommand(query, connection))
                     {

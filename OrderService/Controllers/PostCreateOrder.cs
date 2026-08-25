@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.SignalR;
 using Newtonsoft.Json;
 using Npgsql;
 using OrderService.Hubs;
+using static OrderService.Controllers.PostPaymentRequest;
 
 namespace OrderService.Controllers
 {
@@ -10,11 +11,13 @@ namespace OrderService.Controllers
     [Route("[controller]")]
     public class PostCreateOrder : Controller
     {
-        private readonly IHubContext<OrdersHub> _hubContext;
+        private readonly IHubContext<OrdersHub> _ordersHubContext;
+        private readonly IHubContext<TableHub> _tableHubContext;
 
-        public PostCreateOrder(IHubContext<OrdersHub> hubContext)
+        public PostCreateOrder(IHubContext<OrdersHub> ordersHubContext, IHubContext<TableHub> tableHubContext)
         {
-            _hubContext = hubContext;
+            _ordersHubContext = ordersHubContext;
+            _tableHubContext = tableHubContext;
         }
 
         public class Orderitems
@@ -35,43 +38,70 @@ namespace OrderService.Controllers
             int persons,
             [FromBody] List<Orderitems> orderJson)
         {
-            string orderid = await GetOrderId(tableId, companyid);
-
-            if (string.IsNullOrEmpty(orderid))
+            try
             {
-                string insertHeader = @"
-                    INSERT INTO orderb_orderhdr
-                    (orderid, tableid, createdate, statusflg, createuser, persons, companyid)
-                    VALUES
-                    (to_char(now(), 'DDMMYYHH24MISS'),
-                     @tableid,
-                     now(),
-                     0,
-                     @username,
-                     COALESCE(@persons,1),
-                     @companyid)";
+                string orderid = await GetOrderId(tableId, companyid);
 
-                await using (var connection = new NpgsqlConnection(ConnectionString.Value))
-                {
-                    await connection.OpenAsync();
+                if (string.IsNullOrEmpty(orderid))
+                { 
+                    string insertHeader = @"
+                        INSERT INTO orderb_orderhdr
+                        (orderid, tableid, createdate, statusflg, createuser, persons, companyid)
+                        VALUES
+                        (to_char(now(), 'DDMMYYHH24MISS'),
+                         @tableid,
+                         now(),
+                         0,
+                         @username,
+                         COALESCE(@persons,1),
+                         @companyid)";
 
-                    await using (var command = new NpgsqlCommand(insertHeader, connection))
+                    await using (var connection = new NpgsqlConnection(ConnectionString.Value))
                     {
-                        command.Parameters.AddWithValue("tableid", tableId);
-                        command.Parameters.AddWithValue("username", username);
-                        command.Parameters.AddWithValue("persons", persons);
-                        command.Parameters.AddWithValue("companyid", companyid);
+                        await connection.OpenAsync();
 
-                        await command.ExecuteNonQueryAsync();
+                        await using (var command = new NpgsqlCommand(insertHeader, connection))
+                        {
+                            command.Parameters.AddWithValue("tableid", tableId);
+                            command.Parameters.AddWithValue("username", username);
+                            command.Parameters.AddWithValue("persons", persons);
+                            command.Parameters.AddWithValue("companyid", companyid);
+
+                            await command.ExecuteNonQueryAsync();
+                        }
                     }
-                }
 
-                orderid = await GetOrderId(tableId, companyid);
-                await InsertOrderDetails(companyid, tableId, orderid, orderJson, userid, username);
+                    orderid = await GetOrderId(tableId, companyid);
+                      
+                    await InsertOrderDetails(companyid, tableId, orderid, orderJson, userid, username);
+                     
+                    await UpdateTableStatus(companyid, tableId, 1);
+                     
+                    await _tableHubContext.Clients
+                        .Group(companyid.ToString())
+                        .SendAsync("ReceiveOrderNewTable", new
+                        {
+                            orderid,
+                            tableId,
+                            newStatus = 1
+                        });
+
+                    Console.WriteLine($"[PostCreateOrder] Order {orderid} created for table {tableId} in company {companyid}");
+                    Console.WriteLine($"[PostCreateOrder] Notified ReceiveOrderNewTable to company {companyid}");
+                }
+                else
+                {
+                    // ====== ΠΡΟΣΘΗΚΗ ΣΕ ΥΠΑΡΧΟΥΣΑ ΠΑΡΑΓΓΕΛΙΑ ======
+                    await InsertOrderDetails(companyid, tableId, orderid, orderJson, userid, username);
+
+                    Console.WriteLine($"[PostCreateOrder] Items added to order {orderid}");
+                }
             }
-            else
+            catch (Exception ex)
             {
-                await InsertOrderDetails(companyid, tableId, orderid, orderJson, userid, username);
+                Console.WriteLine($"[PostCreateOrder] Error: {ex.Message}");
+                Console.WriteLine($"[PostCreateOrder] StackTrace: {ex.StackTrace}");
+                throw;
             }
         }
 
@@ -111,7 +141,7 @@ namespace OrderService.Controllers
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex.Message);
+                Console.WriteLine($"[GetOrderId] Error: {ex.Message}");
             }
 
             return orderid;
@@ -125,12 +155,22 @@ namespace OrderService.Controllers
             string userid,
             string username)
         {
-            foreach (var item in items)
+            try
             {
-                for (int i = 0; i < item.quantity; i++)
+                foreach (var item in items)
                 {
-                    await InsertOrderDTL(orderID, item, orderTableID, username, userid, companyid);
+                    for (int i = 0; i < item.quantity; i++)
+                    {
+                        await InsertOrderDTL(orderID, item, orderTableID, username, userid, companyid);
+                    }
                 }
+
+                Console.WriteLine($"[InsertOrderDetails] {items.Count} items inserted for order {orderID}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[InsertOrderDetails] Error: {ex.Message}");
+                throw;
             }
         }
 
@@ -144,73 +184,140 @@ namespace OrderService.Controllers
         {
             string itemname = "";
 
-            // get item name
-            await using (var connection = new NpgsqlConnection(ConnectionString.Value))
-            {
-                await connection.OpenAsync();
-
-                string q = @"SELECT itemname FROM orderb_item WHERE itemid = @itemid";
-
-                await using (var cmd = new NpgsqlCommand(q, connection))
+            try
+            { 
+                await using (var connection = new NpgsqlConnection(ConnectionString.Value))
                 {
-                    cmd.Parameters.AddWithValue("itemid", item.itemId);
+                    await connection.OpenAsync();
 
-                    await using (var reader = await cmd.ExecuteReaderAsync())
+                    string q = @"SELECT itemname FROM orderb_item WHERE itemid = @itemid";
+
+                    await using (var cmd = new NpgsqlCommand(q, connection))
                     {
-                        if (await reader.ReadAsync())
+                        cmd.Parameters.AddWithValue("itemid", item.itemId);
+
+                        await using (var reader = await cmd.ExecuteReaderAsync())
                         {
-                            itemname = reader["itemname"]?.ToString();
+                            if (await reader.ReadAsync())
+                            {
+                                itemname = reader["itemname"]?.ToString();
+                            }
+                        }
+                    }
+                }
+
+                string unique = (DateTime.UtcNow.Ticks % 100000).ToString("D5");
+                string orderDtlSeq = orderid + unique;
+
+                string insert = @"INSERT INTO orderb_orderdtl
+                    (orderid, orderitemid, orderitemname, orderitemdescription,
+                     payedflg, deletedflg, price, ordertable,
+                     createduser, status, orderdtlitemisseq, createdate, companyid)
+                    VALUES
+                    (@orderid, @itemid, @itemname, @comments,
+                     NULL, 0, @price, @ordertable,
+                     @username, 1, @seq, now(), @companyid)";
+
+                await using (var connection = new NpgsqlConnection(ConnectionString.Value))
+                {
+                    await connection.OpenAsync();
+
+                    await using (var cmd = new NpgsqlCommand(insert, connection))
+                    {
+                        cmd.Parameters.AddWithValue("orderid", orderid);
+                        cmd.Parameters.AddWithValue("itemid", item.itemId);
+                        cmd.Parameters.AddWithValue("itemname", itemname);
+                        cmd.Parameters.AddWithValue("comments", item.comment ?? "");
+                        cmd.Parameters.AddWithValue("price", item.price);
+                        cmd.Parameters.AddWithValue("ordertable", ordertable);
+                        cmd.Parameters.AddWithValue("username", username);
+                        cmd.Parameters.AddWithValue("seq", orderDtlSeq);
+                        cmd.Parameters.AddWithValue("companyid", companyid);
+
+                        await cmd.ExecuteNonQueryAsync();
+                    }
+                }
+
+                // ====== ΕΙΔΟΠΟΙΗΣΗ - ΝΕΑOTABLE ======
+                await _ordersHubContext.Clients
+                    .Group(companyid.ToString())
+                    .SendAsync("ReceiveOrdersInsert", new
+                    {
+                        orderid,
+                        item.itemId,
+                        itemname,
+                        item.comment,
+                        item.price,
+                        ordertable,
+                        username,
+                        orderDtlSeq
+                    });
+
+                Console.WriteLine($"[InsertOrderDTL] Order item {orderDtlSeq} inserted");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[InsertOrderDTL] Error: {ex.Message}");
+                throw;
+            }
+        } 
+        private async Task UpdateTableStatus(int companyid, int tableId, int status)
+        {
+            try
+            {
+                await using (var connection = new NpgsqlConnection(ConnectionString.Value))
+                {
+                    await connection.OpenAsync();
+
+                    string updateQuery = @"
+                        UPDATE orderb_tables
+                        SET status = @status
+                        WHERE tableid = @tableid
+                          AND company_id = @companyid";
+
+                    await using (var command = new NpgsqlCommand(updateQuery, connection))
+                    {
+                        command.Parameters.AddWithValue("status", status);
+                        command.Parameters.AddWithValue("tableid", tableId);
+                        command.Parameters.AddWithValue("companyid", companyid);
+
+                        int rowsAffected = await command.ExecuteNonQueryAsync();
+
+                        if (rowsAffected > 0)
+                        {
+                            Console.WriteLine($"[UpdateTableStatus] Table {tableId} status updated to {status}");
+
+                            // ====== ΕΙΔΟΠΟΙΗΣΗ - STATUS CHANGE ======
+                            await NotifyTableStatusChanged(companyid, tableId, status);
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[UpdateTableStatus] No rows affected for table {tableId}");
                         }
                     }
                 }
             }
-
-            string unique = (DateTime.UtcNow.Ticks % 100000).ToString("D5");
-            string orderDtlSeq = orderid + unique;
-
-            string insert = @"
-                INSERT INTO orderb_orderdtl
-                (orderid, orderitemid, orderitemname, orderitemdescription,
-                 payedflg, deletedflg, price, ordertable,
-                 createduser, status, orderdtlitemisseq, createdate, companyid)
-                VALUES
-                (@orderid, @itemid, @itemname, @comments,
-                 NULL, 0, @price, @ordertable,
-                 @username, 1, @seq, now(), @companyid)";
-
-            await using (var connection = new NpgsqlConnection(ConnectionString.Value))
+            catch (Exception ex)
             {
-                await connection.OpenAsync();
-
-                await using (var cmd = new NpgsqlCommand(insert, connection))
-                {
-                    cmd.Parameters.AddWithValue("orderid", orderid);
-                    cmd.Parameters.AddWithValue("itemid", item.itemId);
-                    cmd.Parameters.AddWithValue("itemname", itemname);
-                    cmd.Parameters.AddWithValue("comments", item.comment ?? "");
-                    cmd.Parameters.AddWithValue("price", item.price);
-                    cmd.Parameters.AddWithValue("ordertable", ordertable);
-                    cmd.Parameters.AddWithValue("username", username);
-                    cmd.Parameters.AddWithValue("seq", orderDtlSeq);
-                    cmd.Parameters.AddWithValue("companyid", companyid);
-
-                    await cmd.ExecuteNonQueryAsync();
-                }
+                Console.WriteLine($"[UpdateTableStatus] Error: {ex.Message}");
+                throw;
             }
+        }
+         
+        private async Task NotifyTableStatusChanged(int companyid, int tableId, int status)
+        {
+            try
+            {
+                await _tableHubContext.Clients
+                    .Group(companyid.ToString())
+                    .SendAsync("TableStatusChanged", tableId.ToString(), status);
 
-            await _hubContext.Clients
-                .Group(companyid.ToString())
-                .SendAsync("ReceiveOrdersInsert", new
-                {
-                    orderid,
-                    item.itemId,
-                    itemname,
-                    item.comment,
-                    item.price,
-                    ordertable,
-                    username,
-                    orderDtlSeq
-                });
+                Console.WriteLine($"[NotifyTableStatusChanged] Table {tableId} status {status} notified to company {companyid}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NotifyTableStatusChanged] Error: {ex.Message}");
+            }
         }
     }
 }

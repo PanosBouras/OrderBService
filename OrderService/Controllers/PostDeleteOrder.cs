@@ -1,7 +1,12 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using Npgsql;
+using Oracle.ManagedDataAccess.Client;
 using OrderService.Hubs;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel.Design;
+using static OrderService.Controllers.PostCreateOrder;
 
 namespace OrderService.Controllers
 {
@@ -10,46 +15,55 @@ namespace OrderService.Controllers
     public class PostDeleteOrder : Controller
     {
         private readonly IHubContext<OrdersHub> _hubContext;
+        private readonly IHubContext<TableHub> _tableHubContext;
 
-        public PostDeleteOrder(IHubContext<OrdersHub> hubContext)
+        public PostDeleteOrder(IHubContext<OrdersHub> hubContext, IHubContext<TableHub> tableHubContext)
         {
             _hubContext = hubContext;
+            _tableHubContext = tableHubContext;
         }
 
         [HttpPost(Name = "PostDeleteOrder")]
-        public async Task PostDeleteOrderAsync(string companyID, string tableid, string username)
+        public async Task PostDeleteItemOrderAsync(String companyID, String tableid, String username)
         {
             try
             {
-                await using (var connection = new NpgsqlConnection(ConnectionString.Value))
+                string delqry = "CALL public.deleteorder(@pi_companyid, @pi_tableid, @pi_username);";
+
+                await using (NpgsqlConnection connection =
+                    new NpgsqlConnection(ConnectionString.Value))
                 {
                     await connection.OpenAsync();
 
-                    // call PostgreSQL procedure
-                    string callProc = "CALL deleteorder(@tableid, @username);";
-
-                    await using (var command = new NpgsqlCommand(callProc, connection))
+                    await using (NpgsqlCommand command =
+                        new NpgsqlCommand(delqry, connection))
                     {
-                        command.Parameters.AddWithValue("tableid", int.Parse(tableid));
-                        command.Parameters.AddWithValue("username", username);
+                       //   command.Parameters.AddWithValue("pi_companyid", companyID);
+                      //    command.Parameters.AddWithValue("pi_tableid", tableid);
+                     //     command.Parameters.AddWithValue("pi_username", username);
+                        command.Parameters.AddWithValue("pi_companyid",NpgsqlTypes.NpgsqlDbType.Integer,Convert.ToInt32(companyID));
+                        command.Parameters.AddWithValue("pi_tableid",NpgsqlTypes.NpgsqlDbType.Integer,Convert.ToInt32(tableid));
+                        command.Parameters.AddWithValue("pi_username",NpgsqlTypes.NpgsqlDbType.Text,username);
 
                         int rows = await command.ExecuteNonQueryAsync();
 
-                        // NOTE: PostgreSQL CALL returns -1 usually (no affected rows)
-                        if (rows >= -1)
-                        {
-                            await _hubContext.Clients
-                                .Group(companyID)
-                                .SendAsync("ReceiveOrdersDeleteOrder",
-                                    "Deleted order table:" + tableid);
-                        }
+                        await _hubContext.Clients
+                            .Group(companyID.ToString())
+                            .SendAsync("ReceiveOrdersDeleteOrder",
+                                "Deleted order table:" + tableid);
+
+                        await _tableHubContext.Clients
+                            .Group(companyID.ToString())
+                            .SendAsync("TableStatusChanged",
+                                tableid.ToString(), 0);
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex.Message);
+                string sss = ex.Message;
             }
         }
+
     }
 }

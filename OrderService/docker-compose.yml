@@ -1,46 +1,54 @@
-version: "3.9"
-
+version: '3.9'
 services:
-
-  orderservice:
-    image: orderservice:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-    expose:
-      - "80"
-    depends_on:
-      postgresdb:
-        condition: service_healthy
-    environment:
-      ASPNETCORE_ENVIRONMENT: Development
-      ASPNETCORE_URLS: http://+:80
-      DB_CONNECTION_STRING: Host=postgresdb;Port=5432;Username=postgres;Password=1234;Database=postgresdb
-
   postgresdb:
-    image: postgres:13
+    image: postgres:15
+    restart: always
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: "1234"
-      POSTGRES_DB: postgresdb
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: ordersdb
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+    ports:
+    - "5432:5432" 
+
+  orderservice:
+    build: .
+    restart: always
+    depends_on:
+      - postgresdb
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: Host=postgresdb;Port=5432;Database=ordersdb;Username=postgres;Password=1234
+    expose:
+      - "8080"
 
   nginx:
     image: nginx:latest
-    ports:
-      - "6060:80"
-    volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: always
     depends_on:
       - orderservice
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: >
+      sh -c "certbot certonly --webroot
+      --webroot-path=/var/www/certbot
+      --email your@email.com
+      --agree-tos
+      --no-eff-email
+      -d orderb.hopto.org"
 
 volumes:
   postgres_data:

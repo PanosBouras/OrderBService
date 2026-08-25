@@ -1,7 +1,7 @@
 ﻿using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
-using Oracle.ManagedDataAccess.Client;
+using Npgsql;
 using BCrypt.Net;
 
 namespace OrderService.Controllers
@@ -25,82 +25,96 @@ namespace OrderService.Controllers
     [Route("[controller]")]
     public class RegisterUserController : Controller
     {
+        private readonly string _connectionString = ConnectionString.Value;
+
         private string ComputeSha256Hash(string rawData)
         {
             using (SHA256 sha256Hash = SHA256.Create())
             {
                 byte[] bytes = sha256Hash.ComputeHash(Encoding.UTF8.GetBytes(rawData));
                 StringBuilder builder = new StringBuilder();
+
                 foreach (byte b in bytes)
                     builder.Append(b.ToString("x2"));
+
                 return builder.ToString();
             }
         }
 
         [HttpPost(Name = "PostRegisterUser")]
         public async Task<JsonResult> RegisterUser([FromBody] RegisterRequest request)
-        { 
+        {
             if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))
                 return Json(new { status = "false", message = "Username και Password είναι υποχρεωτικά." });
 
-            if (request.Password.Length < 6)
-                return Json(new { status = "false", message = "Το password πρέπει να έχει τουλάχιστον 6 χαρακτήρες." });
-             
-            string hashedUsername = ComputeSha256Hash(request.Username); 
+          //  if (request.Password.Length < 6)
+           //     return Json(new { status = "false", message = "Το password πρέπει να έχει τουλάχιστον 6 χαρακτήρες." });
+
+            //string hashedUsername = ComputeSha256Hash(request.Username);
             string hashedPassword = BCrypt.Net.BCrypt.HashPassword(request.Password);
 
             try
             {
-                using (OracleConnection connection = new OracleConnection(ConnectionString.Value))
+                await using var connection = new NpgsqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                // 1. Check duplicate username
+                string checkQuery = @"SELECT COUNT(*) FROM ORDERB_USERS WHERE USERNAME = @username";
+
+                await using (var checkCmd = new NpgsqlCommand(checkQuery, connection))
                 {
-                    connection.Open();
-                     
-                    string checkQuery = "SELECT COUNT(*) FROM ORDERB_USERS WHERE USERNAME = :pi_username";
-                    using (OracleCommand checkCmd = new OracleCommand(checkQuery, connection))
-                    {
-                        checkCmd.Parameters.Add(new OracleParameter("pi_username", hashedUsername));
-                        int count = Convert.ToInt32(checkCmd.ExecuteScalar());
-                        if (count > 0)
-                            return Json(new { status = "false", message = "Το username υπάρχει ήδη." });
-                    }
-                     
-                    string idQuery = "SELECT NVL(MAX(ID), 0) + 1 FROM ORDERB_USERS";
-                    int newId;
-                    using (OracleCommand idCmd = new OracleCommand(idQuery, connection))
-                    {
-                        newId = Convert.ToInt32(idCmd.ExecuteScalar());
-                    }
-                     
-                    string insertQuery = @"
-                        INSERT INTO ORDERB_USERS 
-                            (ID, USERNAME, PASSWORD, USERROLE, ACTIVE, STATUS, COMPANYID, 
-                             SUBSTORE, H_USERNAME, POSITIONID, FIRSTNAME, LASTNAME, 
-                             BIRTHDAY, GENDER, PHONE)
-                        VALUES 
-                            (:p_id, :p_username, :p_password, :p_userrole, :p_active, :p_status, :p_companyid,
-                             :p_substore, :p_h_username, :p_positionid, :p_firstname, :p_lastname,
-                             :p_birthday, :p_gender, :p_phone)";
+                    checkCmd.Parameters.AddWithValue("username", request.Username);
 
-                    using (OracleCommand insertCmd = new OracleCommand(insertQuery, connection))
-                    {
-                        insertCmd.Parameters.Add(new OracleParameter("p_id", newId));
-                        insertCmd.Parameters.Add(new OracleParameter("p_username", hashedUsername));       // SHA-256
-                        insertCmd.Parameters.Add(new OracleParameter("p_password", hashedPassword));       // BCrypt
-                        insertCmd.Parameters.Add(new OracleParameter("p_userrole", request.UserRole));
-                        insertCmd.Parameters.Add(new OracleParameter("p_active", 1));                    // active by default
-                        insertCmd.Parameters.Add(new OracleParameter("p_status", 1));                    // status active
-                        insertCmd.Parameters.Add(new OracleParameter("p_companyid", request.CompanyId));
-                        insertCmd.Parameters.Add(new OracleParameter("p_substore", request.SubStore));
-                        insertCmd.Parameters.Add(new OracleParameter("p_h_username", request.Username));    
-                        insertCmd.Parameters.Add(new OracleParameter("p_positionid", request.PositionId));
-                        insertCmd.Parameters.Add(new OracleParameter("p_firstname", request.FirstName));
-                        insertCmd.Parameters.Add(new OracleParameter("p_lastname", request.LastName));
-                        insertCmd.Parameters.Add(new OracleParameter("p_birthday", request.Birthday.HasValue ? (object)request.Birthday.Value : DBNull.Value));
-                        insertCmd.Parameters.Add(new OracleParameter("p_gender", request.Gender));
-                        insertCmd.Parameters.Add(new OracleParameter("p_phone", request.Phone ?? ""));
+                    int count = Convert.ToInt32(await checkCmd.ExecuteScalarAsync());
 
-                        insertCmd.ExecuteNonQuery();
-                    }
+                    if (count > 0)
+                        return Json(new { status = "false", message = "Το username υπάρχει ήδη." });
+                }
+
+                // 2. Get new ID
+                string idQuery = @"SELECT COALESCE(MAX(ID), 0) + 1 FROM ORDERB_USERS";
+
+                int newId;
+                await using (var idCmd = new NpgsqlCommand(idQuery, connection))
+                {
+                    newId = Convert.ToInt32(await idCmd.ExecuteScalarAsync());
+                }
+
+                // 3. Insert user
+                string insertQuery = @"
+                    INSERT INTO ORDERB_USERS
+                    (
+                        ID, USERNAME, PASSWORD, USERROLE, ACTIVE, STATUS,
+                        COMPANYID, SUBSTORE, H_USERNAME, POSITIONID,
+                        FIRSTNAME, LASTNAME, BIRTHDAY, GENDER, PHONE
+                    )
+                    VALUES
+                    (
+                        @id, @username, @password, @userrole, @active, @status,
+                        @companyid, @substore, @h_username, @positionid,
+                        @firstname, @lastname, @birthday, @gender, @phone
+                    )";
+
+                await using (var insertCmd = new NpgsqlCommand(insertQuery, connection))
+                {
+                    insertCmd.Parameters.AddWithValue("id", newId);
+                    insertCmd.Parameters.AddWithValue("username", request.Username);
+                    insertCmd.Parameters.AddWithValue("password", hashedPassword);
+                    insertCmd.Parameters.AddWithValue("userrole", request.UserRole);
+                    insertCmd.Parameters.AddWithValue("active", 1);
+                    insertCmd.Parameters.AddWithValue("status", 1);
+                    insertCmd.Parameters.AddWithValue("companyid", request.CompanyId);
+                    insertCmd.Parameters.AddWithValue("substore", request.SubStore);
+                    insertCmd.Parameters.AddWithValue("h_username", request.Username);
+                    insertCmd.Parameters.AddWithValue("positionid", request.PositionId);
+                    insertCmd.Parameters.AddWithValue("firstname", request.FirstName);
+                    insertCmd.Parameters.AddWithValue("lastname", request.LastName);
+                    insertCmd.Parameters.AddWithValue("birthday",
+                        request.Birthday.HasValue ? request.Birthday.Value : (object)DBNull.Value);
+                    insertCmd.Parameters.AddWithValue("gender", request.Gender);
+                    insertCmd.Parameters.AddWithValue("phone", request.Phone ?? "");
+
+                    await insertCmd.ExecuteNonQueryAsync();
                 }
             }
             catch (Exception ex)

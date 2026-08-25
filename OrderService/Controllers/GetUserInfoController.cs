@@ -76,7 +76,8 @@ namespace OrderService.Controllers
                                     positionid = GetNullableInt(reader["positionid"]),
                                     firstname = reader["firstname"]?.ToString(),
                                     lastname = reader["lastname"]?.ToString(),
-                                    birthday = reader["birthday"]?.ToString(),
+                                    birthday = reader["birthday"] == DBNull.Value? null: Convert.ToDateTime(reader["birthday"]).ToString("yyyy-MM-dd"),
+                                    // birthday = reader["birthday"]?.ToString(),
                                     gender = GetNullableInt(reader["gender"]),
                                     phone = reader["phone"]?.ToString()
                                 };
@@ -148,7 +149,8 @@ namespace OrderService.Controllers
                                     positionid = GetNullableInt(reader["positionid"]),
                                     firstname = reader["firstname"]?.ToString(),
                                     lastname = reader["lastname"]?.ToString(),
-                                    birthday = reader["birthday"]?.ToString(),
+                                    birthday = reader["birthday"] == DBNull.Value ? null : Convert.ToDateTime(reader["birthday"]).ToString("yyyy-MM-dd"),
+                                    //birthday = reader["birthday"]?.ToString(),
                                     gender = GetNullableInt(reader["gender"]),
                                     phone = reader["phone"]?.ToString()
                                 };
